@@ -42,15 +42,19 @@
  *    https://www.dmtf.org/sites/default/files/DSP0270_1.0.1.pdf
  */
 
-#include <getopt.h>
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif
 
-#include "alloc-util.h"
+#include <getopt.h>
+#include <sys/socket.h>
+
+#include "util.h"
+#include "libudev.h"
+#include "libudev-private.h"
 #include "fileio.h"
-#include "main-func.h"
-#include "string-util.h"
 #include "udev-util.h"
 #include "unaligned.h"
-#include "version.h"
 
 #define SUPPORTED_SMBIOS_VER 0x030300
 
@@ -596,18 +600,18 @@ static int smbios3_decode(const uint8_t *buf, const char *devmem, bool no_file_o
 
         /* Don't let checksum run beyond the buffer */
         if (buf[0x06] > 0x20)
-                return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
+                return log_error_errno(/*SYNTHETIC_ERRNO*/(EINVAL),
                                        "Entry point length too large (%"PRIu8" bytes, expected %u).",
                                        buf[0x06], 0x18U);
 
         if (!verify_checksum(buf, buf[0x06]))
-                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to verify checksum.");
+                return log_error_errno(/*SYNTHETIC_ERRNO*/(EINVAL), "Failed to verify checksum.");
 
         offset = QWORD(buf + 0x10);
 
 #if __SIZEOF_SIZE_T__ != 8
         if (!no_file_offset && (offset >> 32) != 0)
-                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "64-bit addresses not supported on 32-bit systems.");
+                return log_error_errno(/*SYNTHETIC_ERRNO*/(EINVAL), "64-bit addresses not supported on 32-bit systems.");
 #endif
 
         return dmi_table(offset, DWORD(buf + 0x0C), 0, devmem, no_file_offset);
@@ -616,14 +620,14 @@ static int smbios3_decode(const uint8_t *buf, const char *devmem, bool no_file_o
 static int smbios_decode(const uint8_t *buf, const char *devmem, bool no_file_offset) {
         /* Don't let checksum run beyond the buffer */
         if (buf[0x05] > 0x20)
-                return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
+                return log_error_errno(/*SYNTHETIC_ERRNO*/(EINVAL),
                                        "Entry point length too large (%"PRIu8" bytes, expected %u).",
                                        buf[0x05], 0x1FU);
 
         if (!verify_checksum(buf, buf[0x05])
             || memcmp(buf + 0x10, "_DMI_", 5) != 0
             || !verify_checksum(buf + 0x10, 0x0F))
-                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to verify checksum.");
+                return log_error_errno(/*SYNTHETIC_ERRNO*/(EINVAL), "Failed to verify checksum.");
 
         return dmi_table(DWORD(buf + 0x18), WORD(buf + 0x16), WORD(buf + 0x1C),
                          devmem, no_file_offset);
@@ -631,7 +635,7 @@ static int smbios_decode(const uint8_t *buf, const char *devmem, bool no_file_of
 
 static int legacy_decode(const uint8_t *buf, const char *devmem, bool no_file_offset) {
         if (!verify_checksum(buf, 0x0F))
-                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to verify checksum.");
+                return log_error_errno(/*SYNTHETIC_ERRNO*/(EINVAL), "Failed to verify checksum.");
 
         return dmi_table(DWORD(buf + 0x08), WORD(buf + 0x06), WORD(buf + 0x0C),
                          devmem, no_file_offset);
@@ -660,29 +664,50 @@ static int parse_argv(int argc, char * const *argv) {
                         arg_source_file = optarg;
                         break;
                 case 'V':
-                        printf("%s\n", GIT_VERSION);
+                        printf("%s\n", VERSION);
                         return 0;
                 case 'h':
                         return help();
                 case '?':
                         return -EINVAL;
                 default:
-                        assert_not_reached();
+                        assert_not_reached("Unknown option");
                 }
 
         return 1;
 }
 
-static int run(int argc, char* const* argv) {
+int main(int argc, char* const* argv) {
+        _cleanup_udev_unref_ struct udev *udev;
         _cleanup_free_ uint8_t *buf = NULL;
         bool no_file_offset = false;
         size_t size;
-        int r;
+        int r = 1;
 
         log_set_target(LOG_TARGET_AUTO);
-        udev_parse_config();
-        log_parse_environment();
+        //udev_parse_config();
+        //log_parse_environment();
         log_open();
+
+        udev = udev_new();
+        if (udev == NULL)
+                goto exit;
+
+        /*
+        r = get_file_options(udev, NULL, NULL, &newargc, &newargv);
+        if (r < 0) {
+                r = 1;
+                goto exit;
+        }
+        if (r == 0) {
+                assert(newargv);
+
+                if (set_options(udev, newargc, newargv, maj_min_dev) < 0) {
+                        r = 2;
+                        goto exit;
+                }
+        }
+		*/
 
         r = parse_argv(argc, argv);
         if (r <= 0)
@@ -710,6 +735,7 @@ static int run(int argc, char* const* argv) {
                 return legacy_decode(buf, arg_source_file, no_file_offset);
 
         return -EINVAL;
+exit:
+        return r;
 }
 
-DEFINE_MAIN_FUNCTION(run);
